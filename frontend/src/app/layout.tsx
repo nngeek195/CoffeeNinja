@@ -3,17 +3,17 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export const metadata: Metadata = {
-  title: 'Customer Inquiry Management',
+  title: 'Inquiry Desk',
   description: 'Track and resolve customer inquiries',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-slate-50 text-slate-900 min-h-screen`}>
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-screen font-sans">
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

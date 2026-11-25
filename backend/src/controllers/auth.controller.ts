@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { z } from 'zod';
 import { prisma } from '../utils/prisma';
 import { loginSchema } from '../validators/inquiry.validator';
 import { AuthRequest } from '../middleware/auth';
@@ -10,7 +11,7 @@ export const login = async (req: Request, res: Response) => {
   if (!parsed.success) {
     res.status(400).json({
       error: 'Validation failed',
-      details: parsed.error.flatten().fieldErrors,
+      details: z.flattenError(parsed.error).fieldErrors,
     });
     return;
   }
@@ -52,5 +53,6 @@ export const login = async (req: Request, res: Response) => {
 };
 
 export const me = async (req: AuthRequest, res: Response) => {
-  res.json({ user: req.user });
+  const { userId, name, email, role } = req.user!;
+  res.json({ user: { id: userId, name, email, role } });
 };

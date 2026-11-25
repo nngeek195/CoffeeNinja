@@ -1,47 +1,98 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import { ApiError, Inquiry } from '@/types';
-import { X, AlertCircle } from 'lucide-react';
+import { X, AlertCircle, Loader2 } from 'lucide-react';
 
 interface Props {
   onClose: () => void;
   onCreated: (inquiry: Inquiry) => void;
 }
 
-export function CreateInquiryModal({ onClose, onCreated }: Props) {
-  const [customerName, setCustomerName] = useState('');
-  const [customerContact, setCustomerContact] = useState('');
-  const [subject, setSubject] = useState('');
-  const [description, setDescription] = useState('');
+type FieldName = 'customerName' | 'customerContact' | 'subject' | 'description';
 
+const FIELDS: { name: FieldName; label: string; placeholder: string; multiline?: boolean }[] = [
+  { name: 'customerName', label: 'Customer name', placeholder: 'e.g. Nimal Perera' },
+  {
+    name: 'customerContact',
+    label: 'Contact (email or phone)',
+    placeholder: 'nimal@example.com or +94 77 555 1234',
+  },
+  { name: 'subject', label: 'Subject', placeholder: 'Brief summary of the request' },
+  {
+    name: 'description',
+    label: 'Description',
+    placeholder: "Describe the customer's inquiry in detail…",
+    multiline: true,
+  },
+];
+
+const EMPTY_FORM: Record<FieldName, string> = {
+  customerName: '',
+  customerContact: '',
+  subject: '',
+  description: '',
+};
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_PATTERN = /^\+?[0-9][0-9\s\-()]{6,19}$/;
+
+function validate(form: Record<FieldName, string>) {
+  const errors: Partial<Record<FieldName, string[]>> = {};
+  const contact = form.customerContact.trim();
+
+  if (form.customerName.trim().length < 2) {
+    errors.customerName = ['Customer name must be at least 2 characters'];
+  }
+  if (!EMAIL_PATTERN.test(contact) && !PHONE_PATTERN.test(contact)) {
+    errors.customerContact = ['Provide a valid email or phone number'];
+  }
+  if (form.subject.trim().length < 3) {
+    errors.subject = ['Subject must be at least 3 characters'];
+  }
+  if (form.description.trim().length < 10) {
+    errors.description = ['Description must be at least 10 characters'];
+  }
+  return errors;
+}
+
+export function CreateInquiryModal({ onClose, onCreated }: Props) {
+  const [form, setForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldName, string[]>>>({});
+  const firstInputRef = useRef<HTMLInputElement>(null);
 
-  const validateClient = () => {
-    const errors: Record<string, string[]> = {};
-    if (customerName.trim().length < 2) {
-      errors.customerName = ['Customer name must be at least 2 characters'];
+  useEffect(() => {
+    firstInputRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const updateField = (name: FieldName, value: string) => {
+    setForm((prev) => ({ ...prev, [name]: value }));
+    if (fieldErrors[name]) {
+      setFieldErrors((prev) => ({ ...prev, [name]: undefined }));
     }
-    if (customerContact.trim().length < 5) {
-      errors.customerContact = ['Provide a valid email or phone number (min 5 chars)'];
-    }
-    if (subject.trim().length < 3) {
-      errors.subject = ['Subject must be at least 3 characters'];
-    }
-    if (description.trim().length < 10) {
-      errors.description = ['Description must be at least 10 characters'];
-    }
-    return errors;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
     setFormError(null);
 
-    const clientErrors = validateClient();
+    const clientErrors = validate(form);
     if (Object.keys(clientErrors).length > 0) {
       setFieldErrors(clientErrors);
       setFormError('Please fix the highlighted fields before submitting.');
@@ -54,12 +105,7 @@ export function CreateInquiryModal({ onClose, onCreated }: Props) {
     try {
       const data = await apiFetch<{ inquiry: Inquiry }>('/inquiries', {
         method: 'POST',
-        body: JSON.stringify({
-          customerName,
-          customerContact,
-          subject,
-          description,
-        }),
+        body: JSON.stringify(form),
       });
       onCreated(data.inquiry);
     } catch (err) {
@@ -74,109 +120,95 @@ export function CreateInquiryModal({ onClose, onCreated }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl shadow-lg max-w-lg w-full border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">Record New Inquiry</h2>
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-inquiry-title"
+        className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl border border-slate-200 bg-white shadow-xl sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
+          <div>
+            <h2 id="create-inquiry-title" className="text-base font-semibold text-slate-900">
+              Record new inquiry
+            </h2>
+            <p className="mt-0.5 text-sm text-slate-500">All fields are required.</p>
+          </div>
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="text-slate-400 hover:text-slate-600 p-1 rounded cursor-pointer"
+            className="-mr-1.5 cursor-pointer rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 focus-visible:ring-4 focus-visible:ring-slate-900/10 focus-visible:outline-none"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} noValidate className="p-6 space-y-4">
-          {formError && (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{formError}</span>
-            </div>
-          )}
-
-          <div>
-            <label htmlFor="customerName" className="block text-sm font-medium text-slate-700 mb-1">
-              Customer Name *
-            </label>
-            <input
-              id="customerName"
-              type="text"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="e.g., Nimal Perera"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-            />
-            {fieldErrors.customerName && (
-              <p className="text-xs text-red-600 mt-1">{fieldErrors.customerName[0]}</p>
+        <form onSubmit={handleSubmit} noValidate>
+          <div className="space-y-4 px-6 py-5">
+            {formError && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{formError}</span>
+              </div>
             )}
+
+            {FIELDS.map((field, index) => {
+              const error = fieldErrors[field.name]?.[0];
+              const inputProps = {
+                id: field.name,
+                value: form[field.name],
+                placeholder: field.placeholder,
+                className: 'input',
+                'aria-invalid': error ? true : undefined,
+                'aria-describedby': error ? `${field.name}-error` : undefined,
+              };
+
+              return (
+                <div key={field.name}>
+                  <label htmlFor={field.name} className="label">
+                    {field.label}
+                  </label>
+                  {field.multiline ? (
+                    <textarea
+                      {...inputProps}
+                      rows={4}
+                      className="input resize-y"
+                      onChange={(e) => updateField(field.name, e.target.value)}
+                    />
+                  ) : (
+                    <input
+                      {...inputProps}
+                      ref={index === 0 ? firstInputRef : undefined}
+                      type="text"
+                      onChange={(e) => updateField(field.name, e.target.value)}
+                    />
+                  )}
+                  {error && (
+                    <p id={`${field.name}-error`} className="mt-1.5 text-xs font-medium text-red-600">
+                      {error}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
-          <div>
-            <label htmlFor="customerContact" className="block text-sm font-medium text-slate-700 mb-1">
-              Contact (Email or Phone) *
-            </label>
-            <input
-              id="customerContact"
-              type="text"
-              value={customerContact}
-              onChange={(e) => setCustomerContact(e.target.value)}
-              placeholder="e.g., nimal@example.com or +94 77 555 1234"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-            />
-            {fieldErrors.customerContact && (
-              <p className="text-xs text-red-600 mt-1">{fieldErrors.customerContact[0]}</p>
-            )}
-          </div>
-
-          <div>
-            <label htmlFor="subject" className="block text-sm font-medium text-slate-700 mb-1">
-              Subject *
-            </label>
-            <input
-              id="subject"
-              type="text"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder="Brief summary of the request"
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-            />
-            {fieldErrors.subject && (
-              <p className="text-xs text-red-600 mt-1">{fieldErrors.subject[0]}</p>
-            )}
-          </div>
-
-          <div>
-            <label htmlFor="description" className="block text-sm font-medium text-slate-700 mb-1">
-              Description *
-            </label>
-            <textarea
-              id="description"
-              rows={4}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Describe the customer's inquiry in detail..."
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
-            />
-            {fieldErrors.description && (
-              <p className="text-xs text-red-600 mt-1">{fieldErrors.description[0]}</p>
-            )}
-          </div>
-
-          <div className="pt-2 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 rounded-lg border border-slate-200 cursor-pointer"
-            >
+          <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50/60 px-6 py-4 sm:flex-row sm:justify-end">
+            <button type="button" onClick={onClose} className="btn btn-secondary">
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-2 text-sm font-medium text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg cursor-pointer"
-            >
-              {submitting ? 'Saving...' : 'Save Inquiry'}
+            <button type="submit" disabled={submitting} className="btn btn-primary">
+              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {submitting ? 'Saving…' : 'Save inquiry'}
             </button>
           </div>
         </form>

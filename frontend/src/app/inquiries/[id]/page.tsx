@@ -7,25 +7,38 @@ import { useAuth } from '@/context/AuthContext';
 import { apiFetch } from '@/lib/api';
 import { ApiError, Inquiry, InquiryStatus } from '@/types';
 import { Navbar } from '@/components/Navbar';
-import { StatusBadge } from '@/components/StatusBadge';
+import { STATUS_META, StatusBadge } from '@/components/StatusBadge';
 import {
   ArrowLeft,
   AlertCircle,
   ShieldAlert,
+  SearchX,
   RefreshCw,
   CheckCircle2,
   ArrowRight,
+  Check,
+  Loader2,
 } from 'lucide-react';
 
+const LIFECYCLE: InquiryStatus[] = ['NEW', 'IN_PROGRESS', 'RESOLVED'];
+
 const NEXT_STEP: Record<InquiryStatus, { next: InquiryStatus; label: string } | null> = {
-  NEW: { next: 'IN_PROGRESS', label: 'Mark as In Progress' },
-  IN_PROGRESS: { next: 'RESOLVED', label: 'Mark as Resolved' },
+  NEW: { next: 'IN_PROGRESS', label: 'Start progress' },
+  IN_PROGRESS: { next: 'RESOLVED', label: 'Mark as resolved' },
   RESOLVED: null,
 };
 
+const ERROR_SCREENS: Record<number, { title: string; icon: typeof AlertCircle; tone: string }> = {
+  403: { title: 'Access denied', icon: ShieldAlert, tone: 'bg-red-50 text-red-600' },
+  404: { title: 'Inquiry not found', icon: SearchX, tone: 'bg-slate-100 text-slate-500' },
+};
+
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
 function InquiryDetailContent() {
   const { id } = useParams<{ id: string }>();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, logout } = useAuth();
   const router = useRouter();
 
   const [inquiry, setInquiry] = useState<Inquiry | null>(null);
@@ -33,65 +46,65 @@ function InquiryDetailContent() {
   const [pageError, setPageError] = useState<{ status: number; message: string } | null>(null);
 
   const [updating, setUpdating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isStale, setIsStale] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const fetchInquiry = useCallback(async () => {
-    setLoading(true);
-    setPageError(null);
-    setActionError(null);
-    setIsStale(false);
-
-    try {
-      const data = await apiFetch<{ inquiry: Inquiry }>(`/inquiries/${id}`);
-      setInquiry(data.inquiry);
-    } catch (err) {
-      const apiErr = err as ApiError;
-      if (apiErr.status === 401) {
-        router.push('/login');
-        return;
-      }
-      setPageError({
-        status: apiErr.status || 500,
-        message: apiErr.message || 'Unable to load inquiry.',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [id, router]);
+  const loadInquiry = useCallback(
+    () =>
+      apiFetch<{ inquiry: Inquiry }>(`/inquiries/${id}`)
+        .then((data) => {
+          setInquiry(data.inquiry);
+          setPageError(null);
+          setActionError(null);
+          setIsStale(false);
+        })
+        .catch((err: ApiError) => {
+          if (err.status === 401) {
+            logout();
+            return;
+          }
+          setPageError({ status: err.status, message: err.message || 'Unable to load inquiry.' });
+        })
+        .finally(() => setLoading(false)),
+    [id, logout]
+  );
 
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
-    }
+    if (!authLoading && !user) router.replace('/login');
   }, [authLoading, user, router]);
 
   useEffect(() => {
-    if (user && id) {
-      fetchInquiry();
-    }
-  }, [user, id, fetchInquiry]);
+    if (user && id) loadInquiry();
+  }, [user, id, loadInquiry]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await loadInquiry();
+    setRefreshing(false);
+  };
 
   const handleStatusChange = async (nextStatus: InquiryStatus) => {
     if (!inquiry) return;
     setUpdating(true);
     setActionError(null);
-    setIsStale(false);
+    setNotice(null);
 
     try {
       const data = await apiFetch<{ inquiry: Inquiry }>(`/inquiries/${inquiry.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          status: nextStatus,
-          version: inquiry.version,
-        }),
+        body: JSON.stringify({ status: nextStatus, version: inquiry.version }),
       });
       setInquiry(data.inquiry);
+      setNotice(`Status updated to ${STATUS_META[data.inquiry.status].label}.`);
     } catch (err) {
       const apiErr = err as ApiError;
-      if (apiErr.status === 409 && apiErr.code === 'STALE_DATA') {
-        setIsStale(true);
+      if (apiErr.status === 401) {
+        logout();
+        return;
       }
+      setIsStale(apiErr.status === 409 && apiErr.code === 'STALE_DATA');
       setActionError(apiErr.message || 'Failed to update status.');
     } finally {
       setUpdating(false);
@@ -99,151 +112,212 @@ function InquiryDetailContent() {
   };
 
   if (authLoading || !user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">
-        Checking session...
-      </div>
-    );
+    return <SessionCheck />;
   }
 
+  const nextStep = inquiry ? NEXT_STEP[inquiry.status] : null;
+  const currentIndex = inquiry ? LIFECYCLE.indexOf(inquiry.status) : 0;
+  const errorScreen = pageError ? ERROR_SCREENS[pageError.status] : undefined;
+  const ErrorIcon = errorScreen?.icon ?? AlertCircle;
+
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen">
       <Navbar />
 
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-8">
+      <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 mb-6"
+          className="mb-6 inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-slate-500 transition-colors hover:text-slate-900 focus-visible:ring-4 focus-visible:ring-slate-900/10 focus-visible:outline-none"
         >
-          <ArrowLeft className="w-4 h-4" />
-          Back to Inquiries
+          <ArrowLeft className="h-4 w-4" />
+          All inquiries
         </Link>
 
         {loading ? (
-          <div className="bg-white rounded-xl border border-slate-200 p-8 animate-pulse h-64" />
+          <div className="card space-y-6 p-6" aria-busy="true" aria-label="Loading inquiry">
+            <div className="space-y-3">
+              <div className="skeleton h-6 w-2/3" />
+              <div className="skeleton h-3 w-1/3" />
+            </div>
+            <div className="skeleton h-10 w-full" />
+            <div className="grid grid-cols-2 gap-4">
+              {[1, 2, 3, 4].map((n) => (
+                <div key={n} className="space-y-2">
+                  <div className="skeleton h-3 w-16" />
+                  <div className="skeleton h-4 w-3/4" />
+                </div>
+              ))}
+            </div>
+            <div className="skeleton h-24 w-full" />
+          </div>
         ) : pageError ? (
-          <div className="bg-white rounded-xl border border-slate-200 p-10 text-center">
-            {pageError.status === 403 ? (
-              <ShieldAlert className="w-12 h-12 text-red-500 mx-auto mb-3" />
-            ) : (
-              <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-3" />
-            )}
-            <h2 className="text-lg font-semibold text-slate-900">
-              {pageError.status === 403
-                ? 'Access Denied (403)'
-                : pageError.status === 404
-                ? 'Inquiry Not Found (404)'
-                : 'Unable to Open Inquiry'}
-            </h2>
-            <p className="text-sm text-slate-600 mt-1 max-w-md mx-auto">
-              {pageError.message}
-            </p>
-            <Link
-              href="/"
-              className="inline-block mt-5 px-4 py-2 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800"
+          <div className="card px-6 py-14 text-center">
+            <span
+              className={`mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full ${
+                errorScreen?.tone ?? 'bg-amber-50 text-amber-600'
+              }`}
             >
-              Return to Dashboard
+              <ErrorIcon className="h-6 w-6" />
+            </span>
+            <h1 className="text-lg font-semibold text-slate-900">
+              {errorScreen?.title ?? 'Unable to open inquiry'}
+            </h1>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-slate-500">{pageError.message}</p>
+            {pageError.status > 0 && (
+              <p className="mt-3 font-mono text-xs text-slate-400">Error {pageError.status}</p>
+            )}
+            <Link href="/" className="btn btn-primary mt-6">
+              Back to dashboard
             </Link>
           </div>
         ) : inquiry ? (
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-3 flex-wrap">
-                  <h1 className="text-xl font-bold text-slate-900">{inquiry.subject}</h1>
-                  <StatusBadge status={inquiry.status} />
+          <article className="card overflow-hidden">
+            <header className="border-b border-slate-100 px-6 py-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="text-xl font-semibold tracking-tight text-slate-900">{inquiry.subject}</h1>
+                <StatusBadge status={inquiry.status} />
+              </div>
+              <p className="mt-1.5 font-mono text-xs text-slate-400">
+                {inquiry.id} · v{inquiry.version}
+              </p>
+            </header>
+
+            <div className="border-b border-slate-100 bg-slate-50/60 px-6 py-5">
+              <ol className="flex items-center" aria-label="Inquiry lifecycle">
+                {LIFECYCLE.map((step, index) => {
+                  const done = index < currentIndex || inquiry.status === 'RESOLVED';
+                  const current = index === currentIndex && !done;
+                  return (
+                    <li key={step} className={`flex items-center ${index < LIFECYCLE.length - 1 ? 'flex-1' : ''}`}>
+                      <div className="flex items-center gap-2" aria-current={current ? 'step' : undefined}>
+                        <span
+                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                            done
+                              ? 'bg-emerald-500 text-white'
+                              : current
+                                ? 'bg-slate-900 text-white ring-4 ring-slate-900/10'
+                                : 'border border-slate-300 bg-white text-slate-400'
+                          }`}
+                        >
+                          {done ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : index + 1}
+                        </span>
+                        <span
+                          className={`text-sm font-medium whitespace-nowrap ${
+                            done || current ? 'text-slate-900' : 'text-slate-400'
+                          }`}
+                        >
+                          {STATUS_META[step].label}
+                        </span>
+                      </div>
+                      {index < LIFECYCLE.length - 1 && (
+                        <span
+                          className={`mx-3 h-px flex-1 ${index < currentIndex ? 'bg-emerald-400' : 'bg-slate-200'}`}
+                          aria-hidden="true"
+                        />
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+
+            <div className="space-y-6 px-6 py-6">
+              {isStale ? (
+                <div
+                  role="alert"
+                  className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                    <span>{actionError}</span>
+                  </div>
+                  <button
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="btn shrink-0 bg-amber-600 px-3 py-1.5 text-white hover:bg-amber-700 focus-visible:ring-amber-600/25"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                    {refreshing ? 'Refreshing…' : 'Refresh'}
+                  </button>
                 </div>
-                <p className="text-xs text-slate-400 mt-1">
-                  ID: {inquiry.id} · Version {inquiry.version}
+              ) : actionError ? (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{actionError}</span>
+                </div>
+              ) : notice ? (
+                <div
+                  role="status"
+                  className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+                >
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  {notice}
+                </div>
+              ) : null}
+
+              <dl className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
+                {[
+                  { label: 'Customer', value: inquiry.customerName },
+                  { label: 'Contact', value: inquiry.customerContact },
+                  { label: 'Recorded by', value: inquiry.createdBy.name },
+                  { label: 'Last updated', value: formatDate(inquiry.updatedAt) },
+                ].map((item) => (
+                  <div key={item.label}>
+                    <dt className="text-xs font-medium tracking-wide text-slate-500 uppercase">{item.label}</dt>
+                    <dd className="mt-1 text-sm font-medium break-words text-slate-900">{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+
+              <div>
+                <h2 className="mb-2 text-xs font-medium tracking-wide text-slate-500 uppercase">Description</h2>
+                <p className="rounded-lg border border-slate-200 bg-slate-50/60 p-4 text-sm leading-relaxed whitespace-pre-wrap text-slate-800">
+                  {inquiry.description}
                 </p>
               </div>
             </div>
 
-            {actionError && (
-              <div className="mx-6 mt-6 p-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
-                  <span>{actionError}</span>
-                </div>
-                {isStale && (
-                  <button
-                    onClick={fetchInquiry}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg shrink-0 cursor-pointer"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    Refresh Latest Data
-                  </button>
-                )}
-              </div>
-            )}
-
-            <div className="p-6 space-y-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-                <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-100">
-                  <p className="text-xs text-slate-500 uppercase font-medium">Customer</p>
-                  <p className="font-medium text-slate-900 mt-0.5">{inquiry.customerName}</p>
-                </div>
-                <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-100">
-                  <p className="text-xs text-slate-500 uppercase font-medium">Contact</p>
-                  <p className="font-medium text-slate-900 mt-0.5">{inquiry.customerContact}</p>
-                </div>
-                <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-100">
-                  <p className="text-xs text-slate-500 uppercase font-medium">Handled By</p>
-                  <p className="font-medium text-slate-900 mt-0.5">{inquiry.createdBy.name}</p>
-                </div>
-                <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-100">
-                  <p className="text-xs text-slate-500 uppercase font-medium">Last Updated</p>
-                  <p className="font-medium text-slate-900 mt-0.5">
-                    {new Date(inquiry.updatedAt).toLocaleString()}
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-sm font-medium text-slate-700 mb-2">Description</h3>
-                <div className="p-4 rounded-lg bg-slate-50 border border-slate-100 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
-                  {inquiry.description}
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="text-xs text-slate-500">
-                  Lifecycle: <span className="font-medium">New → In Progress → Resolved</span>
-                </div>
-
-                {NEXT_STEP[inquiry.status] ? (
-                  <button
-                    disabled={updating}
-                    onClick={() => handleStatusChange(NEXT_STEP[inquiry.status]!.next)}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-sm font-medium rounded-lg cursor-pointer"
-                  >
-                    {updating ? 'Updating...' : NEXT_STEP[inquiry.status]!.label}
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                ) : (
-                  <div className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700 bg-emerald-50 px-3 py-2 rounded-lg border border-emerald-200">
-                    <CheckCircle2 className="w-4 h-4" />
-                    This inquiry is resolved and closed
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+            <footer className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50/60 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-slate-500">Recorded {formatDate(inquiry.createdAt)}</p>
+              {nextStep ? (
+                <button
+                  disabled={updating || isStale}
+                  onClick={() => handleStatusChange(nextStep.next)}
+                  className="btn btn-primary"
+                >
+                  {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                  {updating ? 'Updating…' : nextStep.label}
+                  {!updating && <ArrowRight className="h-4 w-4" />}
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700">
+                  <CheckCircle2 className="h-4 w-4" />
+                  Resolved and closed
+                </span>
+              )}
+            </footer>
+          </article>
         ) : null}
       </main>
     </div>
   );
 }
 
+function SessionCheck() {
+  return (
+    <div className="flex min-h-screen items-center justify-center gap-2 text-sm text-slate-500">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading…
+    </div>
+  );
+}
+
 export default function InquiryDetailPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center text-slate-500 text-sm">
-          Loading inquiry...
-        </div>
-      }
-    >
+    <Suspense fallback={<SessionCheck />}>
       <InquiryDetailContent />
     </Suspense>
   );

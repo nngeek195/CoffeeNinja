@@ -1,5 +1,6 @@
 import { Response } from 'express';
-import { InquiryStatus, Role } from '@prisma/client';
+import { z } from 'zod';
+import { InquiryStatus, Prisma, Role } from '@prisma/client';
 import { prisma } from '../utils/prisma';
 import { AuthRequest } from '../middleware/auth';
 import {
@@ -7,6 +8,13 @@ import {
   updateStatusSchema,
   uuidSchema,
 } from '../validators/inquiry.validator';
+
+const OWNER_INCLUDE = { createdBy: { select: { id: true, name: true, email: true } } };
+
+const STALE_DATA_RESPONSE = {
+  error: 'This inquiry was updated elsewhere. Please refresh to see the latest status.',
+  code: 'STALE_DATA',
+};
 
 const ALLOWED_TRANSITIONS: Record<InquiryStatus, InquiryStatus[]> = {
   NEW: [InquiryStatus.IN_PROGRESS],
@@ -19,14 +27,14 @@ export const getInquiries = async (req: AuthRequest, res: Response) => {
     const user = req.user!;
     const { status, search } = req.query;
 
-    const where: Record<string, unknown> = {};
+    const where: Prisma.InquiryWhereInput = {};
 
     if (user.role !== Role.ADMIN) {
       where.createdById = user.userId;
     }
 
     if (status && Object.values(InquiryStatus).includes(status as InquiryStatus)) {
-      where.status = status;
+      where.status = status as InquiryStatus;
     }
 
     if (search && typeof search === 'string' && search.trim().length > 0) {
@@ -40,9 +48,7 @@ export const getInquiries = async (req: AuthRequest, res: Response) => {
 
     const inquiries = await prisma.inquiry.findMany({
       where,
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-      },
+      include: OWNER_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
 
@@ -63,9 +69,7 @@ export const getInquiryById = async (req: AuthRequest, res: Response) => {
   try {
     const inquiry = await prisma.inquiry.findUnique({
       where: { id: idCheck.data },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-      },
+      include: OWNER_INCLUDE,
     });
 
     if (!inquiry) {
@@ -90,7 +94,7 @@ export const createInquiry = async (req: AuthRequest, res: Response) => {
   if (!parsed.success) {
     res.status(400).json({
       error: 'Please correct the highlighted fields',
-      details: parsed.error.flatten().fieldErrors,
+      details: z.flattenError(parsed.error).fieldErrors,
     });
     return;
   }
@@ -121,9 +125,7 @@ export const createInquiry = async (req: AuthRequest, res: Response) => {
         description,
         createdById: req.user!.userId,
       },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-      },
+      include: OWNER_INCLUDE,
     });
 
     res.status(201).json({ inquiry });
@@ -144,7 +146,7 @@ export const updateInquiryStatus = async (req: AuthRequest, res: Response) => {
   if (!parsed.success) {
     res.status(400).json({
       error: 'Invalid status update payload',
-      details: parsed.error.flatten().fieldErrors,
+      details: z.flattenError(parsed.error).fieldErrors,
     });
     return;
   }
@@ -165,30 +167,31 @@ export const updateInquiryStatus = async (req: AuthRequest, res: Response) => {
     }
 
     if (existing.version !== version) {
-      res.status(409).json({
-        error: 'This inquiry was updated elsewhere. Please refresh to see the latest status.',
-        code: 'STALE_DATA',
-      });
+      res.status(409).json(STALE_DATA_RESPONSE);
       return;
     }
 
-    const allowedNext = ALLOWED_TRANSITIONS[existing.status];
-    if (!allowedNext.includes(nextStatus)) {
+    if (!ALLOWED_TRANSITIONS[existing.status].includes(nextStatus)) {
       res.status(400).json({
         error: `Cannot transition inquiry from ${existing.status} to ${nextStatus}.`,
       });
       return;
     }
 
-    const updated = await prisma.inquiry.update({
+    // Version is re-checked inside the UPDATE so two concurrent requests can't both pass the check above.
+    const { count } = await prisma.inquiry.updateMany({
+      where: { id: existing.id, version },
+      data: { status: nextStatus, version: { increment: 1 } },
+    });
+
+    if (count === 0) {
+      res.status(409).json(STALE_DATA_RESPONSE);
+      return;
+    }
+
+    const updated = await prisma.inquiry.findUnique({
       where: { id: existing.id },
-      data: {
-        status: nextStatus,
-        version: { increment: 1 },
-      },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-      },
+      include: OWNER_INCLUDE,
     });
 
     res.json({ inquiry: updated });
