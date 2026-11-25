@@ -35,7 +35,7 @@ model Inquiry {
   subject         String
   description     String
   status          InquiryStatus @default(NEW)
-  version         Int           @default(1) // For stale-data / optimistic concurrency checks
+  version         Int           @default(1)
   createdById     String
   createdBy       User          @relation(fields: [createdById], references: [id])
   createdAt       DateTime      @default(now())
