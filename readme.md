@@ -7,7 +7,7 @@ Staff can sign in, log new inquiries, search or filter existing ones, and move t
 ## Stack
 
 - **Frontend:** Next.js (App Router), React, TypeScript, Tailwind CSS
-- **Backend:** Node.js, Express, TypeScript, Zod, JWT, bcryptjs
+- **Backend:** Node.js, Express, TypeScript, JWT, bcryptjs
 - **Database:** PostgreSQL with Prisma ORM
 - **Tests:** Vitest, Supertest, React Testing Library
 
