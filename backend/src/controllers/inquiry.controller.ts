@@ -178,7 +178,6 @@ export const updateInquiryStatus = async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Version is re-checked inside the UPDATE so two concurrent requests can't both pass the check above.
     const { count } = await prisma.inquiry.updateMany({
       where: { id: existing.id, version },
       data: { status: nextStatus, version: { increment: 1 } },
